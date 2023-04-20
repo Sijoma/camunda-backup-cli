@@ -27,7 +27,6 @@ func NewBackupClient(name string, baseURL string) (*BackupClient, error) {
 			name:    name,
 			baseURL: url,
 			httpClient: &http.Client{
-				// We use a short timeout to not block reconcile loop
 				Timeout: time.Second * 10,
 			},
 		}, nil

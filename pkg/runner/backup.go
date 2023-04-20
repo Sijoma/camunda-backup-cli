@@ -20,9 +20,13 @@ type BackupDefinition struct {
 	tasklistURL          string
 	optimizeURL          string
 	zeebeURL             string
+	zeebeIndexPrefix     string
 	backupID             int64
 	backupRepositoryName string
 }
+
+const timeout = time.Minute
+const pollInterval = time.Second * 5
 
 func DoBackup(definition BackupDefinition) {
 	wg := sync.WaitGroup{}
@@ -97,7 +101,7 @@ func DoBackup(definition BackupDefinition) {
 
 	if definition.elasticURL != "" {
 		elasticBkp := elastic.NewElasticClient(definition.elasticURL, definition.backupRepositoryName)
-		_, err := elasticBkp.RequestBackup(ctx, backupID)
+		_, err := elasticBkp.RequestSnapshot(ctx, backupID, definition.zeebeIndexPrefix)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -109,6 +113,7 @@ func DoBackup(definition BackupDefinition) {
 	wg.Wait()
 	log.Println("✅ ✅ ✅ ELASTIC and ZEEBE DONE ✅ ✅ ✅")
 	log.Println("🚀🚀🚀backup DONE!🚀🚀🚀")
+	log.Println("BackupID: ", backupID)
 }
 
 func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *webapps.BackupClient) {
@@ -129,9 +134,8 @@ func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *w
 				}
 
 			}
-			sleep := time.Second * 5
-			log.Println("sleeping", client.Name(), sleep)
-			time.Sleep(sleep)
+			log.Println("waiting on ", client.Name(), pollInterval)
+			time.Sleep(pollInterval)
 		}
 	}()
 
@@ -139,7 +143,7 @@ func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *w
 	case res := <-completedBackup:
 		log.Printf("✅ %s Done! %s %s\n", client.Name(), res.State, res.FailureReason)
 		return
-	case <-time.After(20 * time.Second):
+	case <-time.After(timeout):
 		log.Printf("%s timed out\n", client.Name())
 		return
 	}
@@ -163,9 +167,9 @@ func waitUntilElasticCompleted(ctx context.Context, wg *sync.WaitGroup, client *
 				}
 
 			}
-			sleep := time.Second * 5
-			log.Println("sleeping elastic", sleep)
-			time.Sleep(sleep)
+
+			log.Println("waiting elastic", pollInterval)
+			time.Sleep(pollInterval)
 		}
 	}()
 
@@ -180,7 +184,7 @@ func waitUntilElasticCompleted(ctx context.Context, wg *sync.WaitGroup, client *
 		//}
 		//fmt.Printf("Elastic Completed %s\n", string(bkpJson))
 		return
-	case <-time.After(20 * time.Second):
+	case <-time.After(timeout):
 		log.Println("elastic snapshot timed out")
 		return
 	}
@@ -204,9 +208,8 @@ func waitUntilZeebeBackupCompleted(ctx context.Context, wg *sync.WaitGroup, clie
 				}
 
 			}
-			sleep := time.Second * 5
-			log.Println("sleeping zeebe", sleep)
-			time.Sleep(sleep)
+			log.Println("sleeping zeebe", pollInterval)
+			time.Sleep(pollInterval)
 		}
 	}()
 
@@ -214,7 +217,7 @@ func waitUntilZeebeBackupCompleted(ctx context.Context, wg *sync.WaitGroup, clie
 	case res := <-completedBackup:
 		log.Printf("✅ %s Done! %s \n", "zeebe", res.State)
 		return
-	case <-time.After(20 * time.Second):
+	case <-time.After(timeout):
 		log.Printf("%s timed out\n", "zeebe")
 		return
 	}

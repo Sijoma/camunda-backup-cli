@@ -23,7 +23,6 @@ func NewZeebeClient(baseURL string) *BackupClient {
 	return &BackupClient{
 		baseURL: url,
 		httpClient: &http.Client{
-			// We use a short timeout to not block reconcile loop
 			Timeout: time.Second * 10,
 		},
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,39 +20,10 @@ type Client struct {
 	backupRepositoryName string
 }
 
-type SnapshotResponse struct {
-	Snapshots []struct {
-		Snapshot           string        `json:"snapshot"`
-		Uuid               string        `json:"uuid"`
-		Repository         string        `json:"repository"`
-		VersionId          int           `json:"version_id"`
-		Version            string        `json:"version"`
-		Indices            []interface{} `json:"indices"`
-		DataStreams        []interface{} `json:"data_streams"`
-		IncludeGlobalState bool          `json:"include_global_state"`
-		State              string        `json:"state"`
-		StartTime          time.Time     `json:"start_time"`
-		StartTimeInMillis  int64         `json:"start_time_in_millis"`
-		EndTime            time.Time     `json:"end_time"`
-		EndTimeInMillis    int64         `json:"end_time_in_millis"`
-		DurationInMillis   int           `json:"duration_in_millis"`
-		Failures           []interface{} `json:"failures"`
-		Shards             struct {
-			Total      int `json:"total"`
-			Failed     int `json:"failed"`
-			Successful int `json:"successful"`
-		} `json:"shards"`
-		FeatureStates []interface{} `json:"feature_states"`
-	} `json:"snapshots"`
-	Total     int `json:"total"`
-	Remaining int `json:"remaining"`
-}
-
 func NewElasticClient(baseUrl, repositoryName string) *Client {
 	return &Client{
 		baseURL: baseUrl,
 		httpClient: &http.Client{
-			// We use a short timeout to not block reconcile loop
 			Timeout: time.Second * 10,
 		},
 		backupRepositoryName: repositoryName,
@@ -64,7 +36,6 @@ func (e Client) elasticRequestPath(id int64) string {
 	return requestPath
 }
 
-// Get Status Elasticsearch Snapshot (GET http://localhost:9200/_snapshot/backups/test-snapshot1)
 func (e Client) GetBackup(ctx context.Context, id int64) (*SnapshotResponse, error) {
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.elasticRequestPath(id), nil)
@@ -100,9 +71,8 @@ func (e Client) GetBackup(ctx context.Context, id int64) (*SnapshotResponse, err
 	return nil, fmt.Errorf("error getting the elastic snapshot")
 }
 
-// Create Elasticsearch Snapshot (PUT http://localhost:9200/_snapshot/backups/test-snapshot1)
-func (e Client) RequestBackup(ctx context.Context, id int64) (*SnapshotResponse, error) {
-	requestBody := []byte(`{"indices": "zeebe-record*","feature_states": ["none"]}`)
+func (e Client) RequestSnapshot(ctx context.Context, id int64, zeebeIndexPrefix string) (*SnapshotResponse, error) {
+	requestBody := []byte(fmt.Sprintf(`{"indices": "%s","feature_states": ["none"]}`, zeebeIndexPrefix))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, e.elasticRequestPath(id), bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, err
@@ -120,8 +90,11 @@ func (e Client) RequestBackup(ctx context.Context, id int64) (*SnapshotResponse,
 	// Todo: Check response more
 	log.Printf("Elastic started snapshot of %s and response: response Body %s\n", requestBody, string(respBody))
 
-	if resp.StatusCode == 200 {
+	switch resp.StatusCode {
+	case http.StatusOK:
 		return &SnapshotResponse{}, nil
+	case http.StatusNotFound:
+		return nil, errors.New(string(respBody))
 	}
 
 	return nil, err

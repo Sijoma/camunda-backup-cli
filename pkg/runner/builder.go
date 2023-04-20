@@ -26,6 +26,11 @@ func (b BackupDefinitionBuilder) Zeebe(url string) BackupDefinitionBuilder {
 	return b
 }
 
+func (b BackupDefinitionBuilder) ZeebeIndexPrefix(prefix string) BackupDefinitionBuilder {
+	b.backupDefinition.zeebeIndexPrefix = prefix
+	return b
+}
+
 func (b BackupDefinitionBuilder) Elastic(url, snapshotRepositoryName string) BackupDefinitionBuilder {
 	b.backupDefinition.elasticURL = url
 	b.backupDefinition.backupRepositoryName = snapshotRepositoryName
@@ -34,6 +39,9 @@ func (b BackupDefinitionBuilder) Elastic(url, snapshotRepositoryName string) Bac
 
 func (b BackupDefinitionBuilder) Build() BackupDefinition {
 	b.backupDefinition.backupID = time.Now().Unix()
+	if b.backupDefinition.zeebeIndexPrefix == "" {
+		b.backupDefinition.zeebeIndexPrefix = "zeebe-record*"
+	}
 	return b.backupDefinition
 }
 

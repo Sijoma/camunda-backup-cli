@@ -9,6 +9,7 @@ import (
 )
 
 var zeebeURL string
+var zeebeIndexPrefix string
 var operateURL string
 var tasklistURL string
 var optimizeURL string
@@ -25,9 +26,9 @@ var backupCmd = &cobra.Command{
 			Operate(operateURL).
 			Tasklist(tasklistURL).
 			Optimize(optimizeURL).
-			// Todo: Make zeebe-record prefix configurable
 			Elastic(elasticURL, elasticSnapshotRepositoryName).
 			Zeebe(zeebeURL).
+			ZeebeIndexPrefix(zeebeIndexPrefix).
 			Build()
 
 		runner.DoBackup(backupDefinition)
@@ -37,12 +38,13 @@ var backupCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(backupCmd)
 
-	backupCmd.Flags().StringVar(&zeebeURL, "zeebe", "", "Pass in the url to the zeebe mgmt endpoint")
+	backupCmd.Flags().StringVar(&elasticURL, "elastic", "", "Pass in the url to the elastic mgmt endpoint")
+	backupCmd.Flags().StringVar(&elasticSnapshotRepositoryName, "elastic-repository", "", "Name of the elasticsearch snapshot repository")
 	backupCmd.Flags().StringVar(&operateURL, "operate", "", "Pass in the url to the operate mgmt endpoint")
 	backupCmd.Flags().StringVar(&tasklistURL, "tasklist", "", "Pass in the url to the tasklist mgmt endpoint")
 	backupCmd.Flags().StringVar(&optimizeURL, "optimize", "", "Pass in the url to the optimize mgmt endpoint")
 
-	backupCmd.Flags().StringVar(&elasticURL, "elastic", "", "Pass in the url to the elastic mgmt endpoint")
-	backupCmd.Flags().StringVar(&elasticSnapshotRepositoryName, "repository", "", "Name of the elasticsearch snapshot repository")
-	backupCmd.MarkFlagsRequiredTogether("elastic", "repository")
+	backupCmd.Flags().StringVar(&zeebeURL, "zeebe", "", "Pass in the url to the zeebe mgmt endpoint")
+	backupCmd.Flags().StringVar(&zeebeIndexPrefix, "zeebe-index-prefix", "zeebe-record*", "Pass in the zeebe elasticsearch record prefix. Default: 'zeebe-record*'")
+	backupCmd.MarkFlagsRequiredTogether("elastic", "elastic-repository")
 }
