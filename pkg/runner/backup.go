@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"sync"
 	"time"
@@ -14,6 +15,10 @@ import (
 
 var backupID int64
 
+func init() {
+	log.SetOutput(ioutil.Discard)
+}
+
 type BackupDefinition struct {
 	elasticURL           string
 	operateURL           string
@@ -23,16 +28,45 @@ type BackupDefinition struct {
 	zeebeIndexPrefix     string
 	backupID             int64
 	backupRepositoryName string
+	requiredSteps        float64
+	finishedSteps        float64
+	finishedMsg          string
+	finished             bool
+}
+
+func (b *BackupDefinition) finishStep(msg string) {
+	b.finishedMsg = msg
+	b.finishedSteps += 1
+}
+
+func (b *BackupDefinition) currentStep() float64 {
+	return b.requiredSteps - b.finishedSteps
+}
+
+func (b *BackupDefinition) String() string {
+	return b.finishedMsg
+}
+
+func (b *BackupDefinition) BackupID() int64 {
+	return b.backupID
+}
+
+func (b *BackupDefinition) HasFinished() bool {
+	return b.finished
+
+}
+
+func (b *BackupDefinition) Percent() float64 {
+	return b.finishedSteps / b.requiredSteps
 }
 
 const timeout = time.Minute
 const pollInterval = time.Second * 5
 
-func DoBackup(definition BackupDefinition) {
+func DoBackup(definition BackupDefinition, status chan<- BackupDefinition) {
 	wg := sync.WaitGroup{}
 	ctx := context.Background()
 	backupID = definition.backupID
-
 	// Operate
 	if definition.operateURL != "" {
 		operate, _ := webapps.NewBackupClient("operate", definition.operateURL)
@@ -43,9 +77,8 @@ func DoBackup(definition BackupDefinition) {
 		}
 		// Monitor Webapp Backups
 		wg.Add(1)
-		go waitUntilBackupCompleted(ctx, &wg, operate)
+		go waitUntilBackupCompleted(ctx, &wg, operate, &definition, status)
 	}
-
 	// Optimize
 	if definition.optimizeURL != "" {
 		optimize, _ := webapps.NewBackupClient("optimize", definition.optimizeURL)
@@ -56,7 +89,7 @@ func DoBackup(definition BackupDefinition) {
 		}
 		// Monitor Webapp Backups
 		wg.Add(1)
-		go waitUntilBackupCompleted(ctx, &wg, optimize)
+		go waitUntilBackupCompleted(ctx, &wg, optimize, &definition, status)
 	}
 	// Tasklist
 	if definition.tasklistURL != "" {
@@ -67,10 +100,11 @@ func DoBackup(definition BackupDefinition) {
 			log.Fatal(err)
 		}
 		wg.Add(1)
-		go waitUntilBackupCompleted(ctx, &wg, tasklist)
+		go waitUntilBackupCompleted(ctx, &wg, tasklist, &definition, status)
 	}
 
 	wg.Wait()
+	status <- definition
 	log.Println("✅ ✅ ✅ WEBAPPS  ✅ ✅ ✅")
 
 	// Once Webapps are finished
@@ -95,7 +129,7 @@ func DoBackup(definition BackupDefinition) {
 			log.Fatal(err)
 		}
 		wg.Add(1)
-		go waitUntilZeebeBackupCompleted(ctx, &wg, zeebe)
+		go waitUntilZeebeBackupCompleted(ctx, &wg, zeebe, &definition, status)
 
 	}
 
@@ -106,17 +140,20 @@ func DoBackup(definition BackupDefinition) {
 			log.Fatal(err)
 		}
 		wg.Add(1)
-		go waitUntilElasticCompleted(ctx, &wg, elasticBkp)
+		go waitUntilElasticCompleted(ctx, &wg, elasticBkp, &definition, status)
 	}
 
 	// Wait for Zeebe and/or elastic
 	wg.Wait()
+
 	log.Println("✅ ✅ ✅ ELASTIC and ZEEBE DONE ✅ ✅ ✅")
 	log.Println("🚀🚀🚀backup DONE!🚀🚀🚀")
 	log.Println("BackupID: ", backupID)
+	definition.finished = true
+	status <- definition
 }
 
-func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *webapps.BackupClient) {
+func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *webapps.BackupClient, definition *BackupDefinition, status chan<- BackupDefinition) {
 	defer wg.Done()
 	completedBackup := make(chan webapps.BackupResponse, 1)
 	go func() {
@@ -141,7 +178,10 @@ func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *w
 
 	select {
 	case res := <-completedBackup:
+		finishedMsg := fmt.Sprintf("✅ %s Done! %s", client.Name(), res.State)
 		log.Printf("✅ %s Done! %s %s\n", client.Name(), res.State, res.FailureReason)
+		definition.finishStep(finishedMsg)
+		status <- *definition
 		return
 	case <-time.After(timeout):
 		log.Printf("%s timed out\n", client.Name())
@@ -149,7 +189,7 @@ func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *w
 	}
 }
 
-func waitUntilElasticCompleted(ctx context.Context, wg *sync.WaitGroup, client *elastic.Client) {
+func waitUntilElasticCompleted(ctx context.Context, wg *sync.WaitGroup, client *elastic.Client, definition *BackupDefinition, status chan<- BackupDefinition) {
 	defer wg.Done()
 	completedBackup := make(chan elastic.SnapshotResponse, 1)
 	go func() {
@@ -178,6 +218,9 @@ func waitUntilElasticCompleted(ctx context.Context, wg *sync.WaitGroup, client *
 		for _, snapshot := range res.Snapshots {
 			log.Printf("Elastic Snapshot in state %s. Name: %s", snapshot.State, snapshot.Snapshot)
 		}
+		finishedMsg := fmt.Sprintf("✅ %s Done! %s", "Elasticsearch snapshot", "COMPLETED")
+		definition.finishStep(finishedMsg)
+		status <- *definition
 		//bkpJson, err := json.MarshalIndent(res, "", "  ")
 		//if err != nil {
 		//	log.Fatalf(err.Error())
@@ -190,7 +233,7 @@ func waitUntilElasticCompleted(ctx context.Context, wg *sync.WaitGroup, client *
 	}
 }
 
-func waitUntilZeebeBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *zeebeBackup.BackupClient) {
+func waitUntilZeebeBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *zeebeBackup.BackupClient, definition *BackupDefinition, status chan<- BackupDefinition) {
 	defer wg.Done()
 	completedBackup := make(chan zeebeBackup.BackupResponse, 1)
 	go func() {
@@ -216,6 +259,9 @@ func waitUntilZeebeBackupCompleted(ctx context.Context, wg *sync.WaitGroup, clie
 	select {
 	case res := <-completedBackup:
 		log.Printf("✅ %s Done! %s \n", "zeebe", res.State)
+		finishedMsg := fmt.Sprintf("✅ %s Done! %s", "Zeebe", res.State)
+		definition.finishStep(finishedMsg)
+		status <- *definition
 		return
 	case <-time.After(timeout):
 		log.Printf("%s timed out\n", "zeebe")
