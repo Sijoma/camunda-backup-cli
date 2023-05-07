@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"c8backup/pkg/backup-client/elastic"
@@ -29,7 +28,6 @@ const timeout = time.Minute
 const pollInterval = time.Second * 5
 
 func DoBackup(definition BackupDefinition) {
-	wg := sync.WaitGroup{}
 	ctx := context.Background()
 	backupID = definition.backupID
 
@@ -41,11 +39,9 @@ func DoBackup(definition BackupDefinition) {
 			log.Println("operate backup request failed")
 			log.Fatal(err)
 		}
-		// Monitor Webapp Backups
-		wg.Add(1)
-		go waitUntilBackupCompleted(ctx, &wg, operate)
+		operateBackup := pollUntilBackupCompleted(ctx, operate)
+		handleResponse(operateBackup, operate.Name())
 	}
-
 	// Optimize
 	if definition.optimizeURL != "" {
 		optimize, _ := webapps.NewBackupClient("optimize", definition.optimizeURL)
@@ -54,9 +50,8 @@ func DoBackup(definition BackupDefinition) {
 			log.Println("optimize backup request failed")
 			log.Fatal(err)
 		}
-		// Monitor Webapp Backups
-		wg.Add(1)
-		go waitUntilBackupCompleted(ctx, &wg, optimize)
+		optimizeBackup := pollUntilBackupCompleted(ctx, optimize)
+		handleResponse(optimizeBackup, optimize.Name())
 	}
 	// Tasklist
 	if definition.tasklistURL != "" {
@@ -66,11 +61,9 @@ func DoBackup(definition BackupDefinition) {
 			log.Println("tasklist backup request failed")
 			log.Fatal(err)
 		}
-		wg.Add(1)
-		go waitUntilBackupCompleted(ctx, &wg, tasklist)
+		tasklistBackup := pollUntilBackupCompleted(ctx, tasklist)
+		handleResponse(tasklistBackup, tasklist.Name())
 	}
-
-	wg.Wait()
 	log.Println("✅ ✅ ✅ WEBAPPS  ✅ ✅ ✅")
 
 	// Once Webapps are finished
@@ -94,8 +87,16 @@ func DoBackup(definition BackupDefinition) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		wg.Add(1)
-		go waitUntilZeebeBackupCompleted(ctx, &wg, zeebe)
+		completedBackup := waitUntilZeebeBackupCompleted(ctx, zeebe)
+		select {
+		case res := <-completedBackup:
+			log.Printf("✅ %s Done! %s \n", "zeebe", res.State)
+			log.Println("✅ ✅ ✅ ZEEBE DONE")
+			return
+		case <-time.After(timeout):
+			log.Printf("%s timed out\n", "zeebe")
+			return
+		}
 
 	}
 
@@ -105,19 +106,35 @@ func DoBackup(definition BackupDefinition) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		wg.Add(1)
-		go waitUntilElasticCompleted(ctx, &wg, elasticBkp)
+		completedBackup := pollUntilElasticCompleted(ctx, elasticBkp)
+		select {
+		case res := <-completedBackup:
+			for _, snapshot := range res.Snapshots {
+				log.Printf("Elastic Snapshot in state %s. Name: %s", snapshot.State, snapshot.Snapshot)
+			}
+			log.Println("✅ ✅ ✅ ELASTIC DONE")
+			return
+		case <-time.After(timeout):
+			log.Println("elastic snapshot timed out")
+			return
+		}
 	}
-
-	// Wait for Zeebe and/or elastic
-	wg.Wait()
-	log.Println("✅ ✅ ✅ ELASTIC and ZEEBE DONE ✅ ✅ ✅")
 	log.Println("🚀🚀🚀backup DONE!🚀🚀🚀")
 	log.Println("BackupID: ", backupID)
 }
 
-func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *webapps.BackupClient) {
-	defer wg.Done()
+func handleResponse(completedBackup <-chan webapps.BackupResponse, name string) {
+	select {
+	case res := <-completedBackup:
+		log.Printf("✅ %s Done! %s %s\n", name, res.State, res.FailureReason)
+		return
+	case <-time.After(timeout):
+		log.Printf("%s timed out\n", name)
+		return
+	}
+}
+
+func pollUntilBackupCompleted(ctx context.Context, client *webapps.BackupClient) <-chan webapps.BackupResponse {
 	completedBackup := make(chan webapps.BackupResponse, 1)
 	go func() {
 		for {
@@ -132,25 +149,15 @@ func waitUntilBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *w
 					completedBackup <- *backupInfo
 					return
 				}
-
 			}
-			log.Println("waiting on ", client.Name(), pollInterval)
 			time.Sleep(pollInterval)
 		}
 	}()
 
-	select {
-	case res := <-completedBackup:
-		log.Printf("✅ %s Done! %s %s\n", client.Name(), res.State, res.FailureReason)
-		return
-	case <-time.After(timeout):
-		log.Printf("%s timed out\n", client.Name())
-		return
-	}
+	return completedBackup
 }
 
-func waitUntilElasticCompleted(ctx context.Context, wg *sync.WaitGroup, client *elastic.Client) {
-	defer wg.Done()
+func pollUntilElasticCompleted(ctx context.Context, client *elastic.Client) <-chan elastic.SnapshotResponse {
 	completedBackup := make(chan elastic.SnapshotResponse, 1)
 	go func() {
 		for {
@@ -173,25 +180,10 @@ func waitUntilElasticCompleted(ctx context.Context, wg *sync.WaitGroup, client *
 		}
 	}()
 
-	select {
-	case res := <-completedBackup:
-		for _, snapshot := range res.Snapshots {
-			log.Printf("Elastic Snapshot in state %s. Name: %s", snapshot.State, snapshot.Snapshot)
-		}
-		//bkpJson, err := json.MarshalIndent(res, "", "  ")
-		//if err != nil {
-		//	log.Fatalf(err.Error())
-		//}
-		//fmt.Printf("Elastic Completed %s\n", string(bkpJson))
-		return
-	case <-time.After(timeout):
-		log.Println("elastic snapshot timed out")
-		return
-	}
+	return completedBackup
 }
 
-func waitUntilZeebeBackupCompleted(ctx context.Context, wg *sync.WaitGroup, client *zeebeBackup.BackupClient) {
-	defer wg.Done()
+func waitUntilZeebeBackupCompleted(ctx context.Context, client *zeebeBackup.BackupClient) <-chan zeebeBackup.BackupResponse {
 	completedBackup := make(chan zeebeBackup.BackupResponse, 1)
 	go func() {
 		for {
@@ -213,12 +205,5 @@ func waitUntilZeebeBackupCompleted(ctx context.Context, wg *sync.WaitGroup, clie
 		}
 	}()
 
-	select {
-	case res := <-completedBackup:
-		log.Printf("✅ %s Done! %s \n", "zeebe", res.State)
-		return
-	case <-time.After(timeout):
-		log.Printf("%s timed out\n", "zeebe")
-		return
-	}
+	return completedBackup
 }
