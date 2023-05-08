@@ -24,21 +24,21 @@ func NewElasticClient(baseUrl, repositoryName string) *Client {
 	return &Client{
 		baseURL: baseUrl,
 		httpClient: &http.Client{
-			Timeout: time.Second * 10,
+			Timeout: time.Second * 60,
 		},
 		backupRepositoryName: repositoryName,
 	}
 }
 
-func (e Client) elasticRequestPath(id int64) string {
-	snapshotName := fmt.Sprintf("%s-%d", "camunda_zeebe_records", id)
+func (e Client) elasticRequestPath(snapshotName string) string {
 	requestPath := fmt.Sprintf("http://%s/%s/%s/%s", e.baseURL, snapshotEndpoint, e.backupRepositoryName, snapshotName)
 	return requestPath
 }
 
 func (e Client) GetBackup(ctx context.Context, id int64) (*SnapshotResponse, error) {
 	// Create request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.elasticRequestPath(id), nil)
+	snapshotName := fmt.Sprintf("%s-%d", "camunda_zeebe_records", id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.elasticRequestPath(snapshotName), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,8 @@ func (e Client) GetBackup(ctx context.Context, id int64) (*SnapshotResponse, err
 
 func (e Client) RequestSnapshot(ctx context.Context, id int64, zeebeIndexPrefix string) (*SnapshotResponse, error) {
 	requestBody := []byte(fmt.Sprintf(`{"indices": "%s","feature_states": ["none"]}`, zeebeIndexPrefix))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, e.elasticRequestPath(id), bytes.NewBuffer(requestBody))
+	snapshotName := fmt.Sprintf("%s-%d", "camunda_zeebe_records", id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, e.elasticRequestPath(snapshotName), bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +105,8 @@ func (e Client) RequestSnapshot(ctx context.Context, id int64, zeebeIndexPrefix 
 // about a backup it requests a backup
 
 func (e Client) DeleteSnapshot(ctx context.Context, id int64) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, e.elasticRequestPath(id), nil)
+	snapshotName := fmt.Sprintf("%s-%d", "camunda_zeebe_records", id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, e.elasticRequestPath(snapshotName), nil)
 	if err != nil {
 		return err
 	}
@@ -125,5 +127,94 @@ func (e Client) DeleteSnapshot(ctx context.Context, id int64) error {
 	//	"acknowledged" : true
 	//}
 	// Todo: Check if deletion was acknowledged
+	return nil
+}
+
+func (e Client) RestoreSnapshots(ctx context.Context, snapshotNames []string) error {
+	for _, name := range snapshotNames {
+		request, err := http.NewRequestWithContext(ctx,
+			http.MethodPost,
+			e.elasticRequestPath(name)+"/_restore?wait_for_completion=true",
+			nil)
+		if err != nil {
+			return err
+		}
+		resp, err := e.httpClient.Do(request)
+		if err != nil {
+			return err
+		}
+
+		respBody, _ := io.ReadAll(resp.Body)
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			return fmt.Errorf("resp status code greater than 300 Body: %s", respBody)
+		}
+
+		fmt.Printf("restored snapshot name: %s", name)
+
+	}
+
+	return nil
+}
+
+func (e Client) DeleteAllIndices(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx,
+		http.MethodGet,
+		"http://"+e.baseURL+"/*", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := e.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+
+	var result map[string]interface{}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	err = json.Unmarshal(respBody, &result)
+	if err != nil {
+		return fmt.Errorf("error unmarshalling json %v", err)
+	}
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("resp status code greater than 300 Body: %s", respBody)
+	}
+
+	for index, _ := range result {
+		fmt.Println(index)
+		err := e.deleteIndex(ctx, index)
+		if err != nil {
+			return err
+		}
+
+	}
+
+	return nil
+}
+
+func (e Client) deleteIndex(ctx context.Context, indexName string) error {
+	request, err := http.NewRequestWithContext(ctx,
+		http.MethodDelete,
+		"http://"+e.baseURL+"/"+indexName, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := e.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	log.Println(string(respBody))
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("error deleting els index %s", indexName)
+	}
+
 	return nil
 }
