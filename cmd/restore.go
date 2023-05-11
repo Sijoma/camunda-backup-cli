@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 
 	"c8backup/pkg/restore"
 	"github.com/spf13/cobra"
@@ -29,16 +30,13 @@ var namespace string
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("restore called")
 		// Todo: Refactor this with something easier :)
-		restore.Restore(namespace, backupID, elasticURL, operateURL, tasklistURL, optimizeURL, zeebeURL, elasticSnapshotRepositoryName)
+		if backupID == 0 {
+			log.Fatal("invalid backup id", backupID)
+		}
+		restore.Restore(namespace, backupID, elasticURL, operateURL, tasklistURL, optimizeURL, elasticSnapshotRepositoryName)
 	},
 }
 
@@ -46,12 +44,11 @@ func init() {
 	rootCmd.AddCommand(restoreCmd)
 
 	restoreCmd.Flags().StringVar(&namespace, "namespace", "", "namespace where stuff runs")
-	restoreCmd.Flags().Int64Var(&backupID, "backupID", 0, "ID of the the backup to restore")
+	restoreCmd.Flags().Int64Var(&backupID, "backup", 0, "ID of the the backup to restore")
 	restoreCmd.Flags().StringVar(&elasticURL, "elastic", "", "Pass in the url to the elastic mgmt endpoint")
 	restoreCmd.Flags().StringVar(&elasticSnapshotRepositoryName, "elastic-repository", "", "Name of the elasticsearch snapshot repository")
 	restoreCmd.Flags().StringVar(&operateURL, "operate", "", "Pass in the url to the operate mgmt endpoint")
 	restoreCmd.Flags().StringVar(&tasklistURL, "tasklist", "", "Pass in the url to the tasklist mgmt endpoint")
 	restoreCmd.Flags().StringVar(&optimizeURL, "optimize", "", "Pass in the url to the optimize mgmt endpoint")
 
-	restoreCmd.Flags().StringVar(&zeebeURL, "zeebe", "", "Pass in the url to the zeebe mgmt endpoint")
 }

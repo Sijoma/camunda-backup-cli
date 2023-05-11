@@ -10,7 +10,6 @@ import (
 
 	"c8backup/pkg/backup-client/elastic"
 	"c8backup/pkg/backup-client/webapps"
-	zeebeBackup "c8backup/pkg/backup-client/zeebe"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,7 +32,7 @@ var statefulsets *apps.StatefulSetList
 var deployments *apps.DeploymentList
 var pvcs *v1.PersistentVolumeClaimList
 
-func Restore(namespace string, backupID int64, elasticUrl, operateUrl, tasklistUrl, optimizeUrl, zeebeUrl, snapshotRepository string) {
+func Restore(namespace string, backupID int64, elasticUrl, operateUrl, tasklistUrl, optimizeUrl, snapshotRepository string) {
 	var kubeconfig *string
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
@@ -63,21 +62,11 @@ func Restore(namespace string, backupID int64, elasticUrl, operateUrl, tasklistU
 	optimizeClient, _ := webapps.NewBackupClient("optimize", optimizeUrl)
 	operateClient, _ := webapps.NewBackupClient("operate", operateUrl)
 	tasklistClient, _ := webapps.NewBackupClient("tasklist", tasklistUrl)
-	zeebeClient := zeebeBackup.NewZeebeClient(zeebeUrl)
 
 	snapshotNames := gatherSnapshotNames(ctx, backupID, elasticClient, []BackupGetter{optimizeClient, tasklistClient, operateClient})
 	fmt.Println(snapshotNames)
 	if !(len(snapshotNames) > 0) {
 		log.Fatalln("not enough snapshots")
-	}
-
-	// Get also zeebe snapshot names
-	backupResponse, err := zeebeClient.GetBackup(ctx, backupID)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	for _, zeebeBkp := range backupResponse.Details {
-		snapshotNames = append(snapshotNames, zeebeBkp.SnapshotId)
 	}
 
 	// We shut down related apps
@@ -236,6 +225,7 @@ func gatherSnapshotNames(ctx context.Context, backupID int64, elasticClient *ela
 		}
 	}
 
+	// Get Zeebe snapshots
 	backupResp, err := elasticClient.GetBackup(ctx, backupID)
 	if err != nil {
 		return nil
@@ -248,9 +238,7 @@ func gatherSnapshotNames(ctx context.Context, backupID int64, elasticClient *ela
 
 func getRelatedApps(ctx context.Context, kubeClient *kubernetes.Clientset, namespace string) (*apps.DeploymentList, *apps.StatefulSetList) {
 	var err error
-	deployments, err = kubeClient.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/app=operate",
-	})
+	deployments, err = kubeClient.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		log.Println(err)
 		return nil, nil
